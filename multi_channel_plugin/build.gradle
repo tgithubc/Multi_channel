@@ -1,0 +1,85 @@
+import java.text.SimpleDateFormat
+
+group 'com.tgithubc'
+version '1.0'
+
+apply plugin: 'groovy'
+apply plugin: 'maven'
+apply plugin: 'maven-publish'
+apply plugin: 'com.jfrog.bintray'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    compile gradleApi()
+    compile localGroovy()
+    compile 'com.android.tools.build:gradle:1.3.1'
+    compile 'org.apache.directory.studio:org.apache.commons.io:2.4'
+}
+
+def siteUrl = 'https://github.com/tgithubc/gen_pack_tool'
+def gitUrl = 'https://github.com/tgithubc/gen_pack_tool.git'
+
+install {
+    repositories.mavenInstaller {
+        pom {
+            project {
+                packaging 'jar'
+                name 'Android gen multi channel package tools'
+                url siteUrl
+                licenses {
+                    license {
+                        name 'The Apache Software License, Version 2.0'
+                        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id 'ltc'
+                        name 'ltc'
+                        email 'tc_6008@163.com'
+                    }
+                }
+                scm {
+                    connection gitUrl
+                    developerConnection gitUrl
+                    url siteUrl
+                }
+            }
+        }
+    }
+}
+
+task sourcesJar(type: Jar) {
+    from sourceSets.main.allSource
+    classifier = 'sources'
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+    classifier = 'javadoc'
+    from javadoc.destinationDir
+}
+artifacts {
+    archives javadocJar
+    archives sourcesJar
+}
+
+bintray {
+    Properties properties = new Properties()
+    properties.load(project.rootProject.file('gradle.properties').newDataInputStream())
+    user = properties.getProperty("BINTRAY_USER")
+    key = properties.getProperty("BINTRAY_APIKEY")
+
+    configurations = ['archives']
+    pkg {
+        repo = "maven"
+        name = "multi_channel_plugin"
+        websiteUrl = siteUrl
+        vcsUrl = gitUrl
+        licenses = ["Apache-2.0"]
+        publish = true
+    }
+}

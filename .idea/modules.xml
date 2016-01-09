@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/multi_channel.iml" filepath="$PROJECT_DIR$/multi_channel.iml" />
+      <module fileurl="file://$PROJECT_DIR$/multi_channel_plugin/multi_channel_plugin.iml" filepath="$PROJECT_DIR$/multi_channel_plugin/multi_channel_plugin.iml" />
+      <module fileurl="file://$PROJECT_DIR$/multi_channel_tools/multi_channel_tools.iml" filepath="$PROJECT_DIR$/multi_channel_tools/multi_channel_tools.iml" />
+    </modules>
+  </component>
+</project>
