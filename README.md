@@ -37,6 +37,10 @@ multichannel {
         }
     }
 }
+
+
+//在代码中获取渠道信息
+ChannelInfoUtils.getChannel(Context context)
 ```
 ##License
 
