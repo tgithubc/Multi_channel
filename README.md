@@ -13,7 +13,7 @@
 apply plugin: 'multi_channel_plugin'
 dependencies {
         classpath 'com.android.tools.build:gradle:1.3.1'
-        classpath 'com.tgithubc:multi_channel_plugin:1.0'
+        classpath 'com.tgithubc:multi_channel_plugin:1.1'
     }
 .
 .
