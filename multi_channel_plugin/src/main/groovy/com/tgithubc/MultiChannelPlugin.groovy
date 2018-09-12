@@ -72,7 +72,7 @@ class MultiChannelPlugin implements Plugin<Project> {
 
                             config.childFlavors.each() { childFlavor ->
                                 log.debug("\tNew channel: " + childFlavor)
-                                Path path = Paths.get(variant.getOutputs().get(0).getOutputFile().getAbsolutePath())
+                                Path path = Paths.get(variant.getOutputs().first().getOutputFile().getAbsolutePath())
 
                                 genApkWithChannel(project, jarsignerExe, zipalignExe, path.getParent().toString() + File.separator,
                                         FilenameUtils.removeExtension(path.getFileName().toString()),
@@ -87,7 +87,7 @@ class MultiChannelPlugin implements Plugin<Project> {
 
                             }
                             // delete pkg
-                            variant.getOutputs().get(0).getOutputFile().delete()
+                            variant.getOutputs().first().getOutputFile().delete()
                         }
                     }
                 }
