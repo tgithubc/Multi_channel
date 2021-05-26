@@ -1,6 +1,7 @@
 package com.tgithubc
 
 import com.android.build.gradle.AppPlugin
+import com.android.builder.model.SigningConfig
 import org.apache.commons.io.FilenameUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -14,10 +15,13 @@ import java.nio.file.attribute.BasicFileAttributes
 
 
 class MultiChannelPlugin implements Plugin<Project> {
+
     def CHANNEL_DIR = "/assets"
     def CHANNEL_FILE = "/assets/channel_info"
     def JARSIGNER_EXE = ".." + File.separator + "bin" + File.separator + "jarsigner"
     def ZIPALIGN_EXE = "zipalign"
+    def jarsignerExe
+    def zipalignExe
 
     @Override
     void apply(Project project) {
@@ -37,8 +41,6 @@ class MultiChannelPlugin implements Plugin<Project> {
             final def log = project.logger
             final def variants = project.android.applicationVariants
 
-            def jarsignerExe
-            def zipalignExe
             if (project.multichannel.jarsignerPath) {
                 jarsignerExe = project.multichannel.jarsignerPath
             } else {
@@ -62,7 +64,7 @@ class MultiChannelPlugin implements Plugin<Project> {
 
                     project.multichannel.channelConfig.each() { config ->
                         if (flavorName.equals(config.name)) {
-                            log.debug("Generate channel based on " + config.name)
+                            log.debug("Generate channel based on $config.name")
 
                             def signConfig = (config.signingConfig != null && config.signingConfig.isSigningReady()) ? config.signingConfig : defaultSignConfig
 
@@ -71,18 +73,14 @@ class MultiChannelPlugin implements Plugin<Project> {
                             }
 
                             config.childFlavors.each() { childFlavor ->
-                                log.debug("\tNew channel: " + childFlavor)
+                                log.debug("\tNew channel: $childFlavor")
                                 Path path = Paths.get(variant.getOutputs().first().getOutputFile().getAbsolutePath())
 
-                                genApkWithChannel(project, jarsignerExe, zipalignExe, path.getParent().toString() + File.separator,
+                                genApkWithChannel(project,
+                                        path.getParent().toString() + File.separator,
                                         FilenameUtils.removeExtension(path.getFileName().toString()),
                                         childFlavor,
-                                        project.multichannel.prefix,
-                                        project.multichannel.subfix,
-                                        signConfig.getStoreFile().getAbsolutePath(),
-                                        signConfig.getKeyAlias(),
-                                        signConfig.getStorePassword(),
-                                        signConfig.getKeyPassword()
+                                        signConfig
                                 )
 
                             }
@@ -93,15 +91,15 @@ class MultiChannelPlugin implements Plugin<Project> {
                 }
             }
 
-            project.task('displayChannelConfig') << {
+            project.task('displayChannelConfig').doLast {
                 project.multichannel.channelConfig.each() { config ->
                     def defaultSignConfig = project.multichannel.defaultSigningConfig
                     def signConfig = (config.signingConfig != null && config.signingConfig.isSigningReady()) ? config.signingConfig : defaultSignConfig
 
-                    println "\\-----" + config.name
-                    println "\t\\-----signConfig: " + signConfig.getName()
+                    println "\\-----$config.name"
+                    println "\t\\-----signConfig: ${signConfig.getName()}"
                     config.childFlavors.each() { childFlavor ->
-                        println "\t\\-----" + childFlavor
+                        println "\t\\-----$childFlavor"
                     }
                 }
             }
@@ -109,23 +107,19 @@ class MultiChannelPlugin implements Plugin<Project> {
     }
 
 
-    void genApkWithChannel(Project project, String jarsignerExe, String zipalignExe, String apkPath, String apkName, String channel, String prefix, String subfix,
-                           String keyStoreFilePath, String keystoreName, String storePass, String keyPass)
-            throws IOException, InterruptedException {
+    void genApkWithChannel(Project project, String apkPath, String apkName, String channel, SigningConfig signConfig) throws IOException, InterruptedException {
         def log = project.logger
 
         log.debug("genApkWithChannel: " +
                 "\n\t" + apkPath +
                 "\n\t" + apkName +
                 "\n\t" + channel +
-                "\n\t" + prefix +
-                "\n\t" + subfix +
-                "\n\t" + keyStoreFilePath +
-                "\n\t" + keystoreName +
-                "\n\t" + storePass +
-                "\n\t" + keyPass)
-
-        long startTime = System.currentTimeMillis()
+                "\n\t" + project.multichannel.prefix +
+                "\n\t" + project.multichannel.subfix +
+                "\n\t" + signConfig.getStoreFile().getAbsolutePath() +
+                "\n\t" + signConfig.getKeyAlias() +
+                "\n\t" + signConfig.getStorePassword() +
+                "\n\t" + signConfig.getKeyPassword())
 
         // create temp file: xx.apk --> xx.zip
         File oldFile = new File(apkPath + apkName + ".apk")
@@ -134,10 +128,10 @@ class MultiChannelPlugin implements Plugin<Project> {
         File tempApkFile = new File(apkPath + apkName + "_" + channel + "_temp.apk")
 
         // outFile is the final output apk file
-        File outFile = new File(apkPath + prefix + channel + subfix + ".apk")
+        File outFile = new File(apkPath + project.multichannel.prefix + channel + project.multichannel.subfix + ".apk")
 
         if (outFile.exists()) {
-            outFile.delete();
+            outFile.delete()
         }
 
         // copy oldFile to tempFile
@@ -157,12 +151,10 @@ class MultiChannelPlugin implements Plugin<Project> {
 
         // re-sign apk
         String signCmd = (jarsignerExe + " -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore "
-                + keyStoreFilePath
-                + " -storepass " + storePass + " -keypass " + keyPass + " "
+                + signConfig.getStoreFile().getAbsolutePath()
+                + " -storepass " + signConfig.getStorePassword() + " -keypass " + signConfig.getKeyPassword() + " "
                 + tempApkFile.getAbsolutePath().replaceAll(" ", "\" \"")
-                + " " + keystoreName)
-
-        log.debug(signCmd)
+                + " " + signConfig.getKeyAlias())
 
         if (execCmdAndWait(signCmd, true) == 0) {
             log.debug("jarsigner process: " + tempApkFile.getAbsolutePath())
@@ -184,10 +176,6 @@ class MultiChannelPlugin implements Plugin<Project> {
         }
         // delete temp apk file
         tempApkFile.delete()
-
-        // sucess
-        log.debug("sucess: " + outFile.getAbsolutePath())
-        log.debug("time:   " + (System.currentTimeMillis() - startTime))
     }
 
     void createEntry(FileSystem zipFileSystem, String entryName, String content) throws IOException {
@@ -199,12 +187,12 @@ class MultiChannelPlugin implements Plugin<Project> {
             Files.createDirectory(dirPath)
         }
         Writer writer = Files.newBufferedWriter(nf, StandardCharsets.UTF_8, StandardOpenOption.CREATE)
-        writer.write(content+"-"+System.currentTimeMillis())
+        writer.write(content + "-" + System.currentTimeMillis())
         writer.flush()
         writer.close()
     }
 
-    void deleteEntry(FileSystem zipFileSystem, String entryName) throws IOException {
+    static void deleteEntry(FileSystem zipFileSystem, String entryName) throws IOException {
         Path path = zipFileSystem.getPath(entryName)
         if (!Files.exists(path)) {
             return
@@ -212,8 +200,7 @@ class MultiChannelPlugin implements Plugin<Project> {
         Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
 
             @Override
-            public FileVisitResult visitFile(Path file,
-                                             BasicFileAttributes attrs) throws IOException {
+            FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
 
                 println("Deleting file: " + file)
                 Files.delete(file)
@@ -221,8 +208,7 @@ class MultiChannelPlugin implements Plugin<Project> {
             }
 
             @Override
-            public FileVisitResult postVisitDirectory(Path dir,
-                                                      IOException exc) throws IOException {
+            FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
                 println("Deleting dir: " + dir)
                 if (exc == null) {
                     Files.delete(dir)
@@ -234,9 +220,7 @@ class MultiChannelPlugin implements Plugin<Project> {
         })
     }
 
-    FileSystem createZipFileSystem(String zipFilename,
-                                   boolean create)
-            throws IOException {
+    static FileSystem createZipFileSystem(String zipFilename, boolean create) throws IOException {
         // convert the filename to a URI
         final Path path = Paths.get(zipFilename)
         final URI uri = URI.create("jar:file:" + path.toUri().getPath())
@@ -248,8 +232,7 @@ class MultiChannelPlugin implements Plugin<Project> {
         return FileSystems.newFileSystem(uri, env)
     }
 
-    int execCmdAndWait(String cmd, boolean showOutput)
-            throws IOException, InterruptedException {
+    static int execCmdAndWait(String cmd, boolean showOutput) throws IOException, InterruptedException {
         Process process = Runtime.getRuntime().exec(cmd)
         if (showOutput) {
             BufferedReader reader = new BufferedReader(

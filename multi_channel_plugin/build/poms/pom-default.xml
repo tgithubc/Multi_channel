@@ -4,39 +4,19 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.tgithubc</groupId>
   <artifactId>multi_channel_plugin</artifactId>
-  <version>1.0</version>
-  <name>Android gen multi channel package tools</name>
-  <url>https://github.com/tgithubc/gen_pack_tool</url>
-  <licenses>
-    <license>
-      <name>The Apache Software License, Version 2.0</name>
-      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
-    </license>
-  </licenses>
-  <developers>
-    <developer>
-      <id>ltc</id>
-      <name>ltc</name>
-      <email>tc_6008@163.com</email>
-    </developer>
-  </developers>
-  <scm>
-    <connection>https://github.com/tgithubc/gen_pack_tool.git</connection>
-    <developerConnection>https://github.com/tgithubc/gen_pack_tool.git</developerConnection>
-    <url>https://github.com/tgithubc/gen_pack_tool</url>
-  </scm>
+  <version>1.2</version>
   <dependencies>
+    <dependency>
+      <groupId>com.android.tools.build</groupId>
+      <artifactId>gradle</artifactId>
+      <version>3.4.3</version>
+      <scope>runtime</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.directory.studio</groupId>
       <artifactId>org.apache.commons.io</artifactId>
       <version>2.4</version>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.android.tools.build</groupId>
-      <artifactId>gradle</artifactId>
-      <version>1.3.1</version>
-      <scope>compile</scope>
+      <scope>runtime</scope>
     </dependency>
   </dependencies>
 </project>
