@@ -13,22 +13,27 @@
 apply plugin: 'multi_channel_plugin'
 dependencies {
         classpath 'com.android.tools.build:gradle:1.3.1'
-        classpath 'com.tgithubc:multi_channel_plugin:1.1'
+        classpath 'com.tgithubc:multi_channel_plugin:1.2'
     }
 .
 .
 .
 //在multichannel中派生子包，aBase，bBase为android.productFlavors生产的底包
 multichannel {
-    defaultSigningConfig = android.signingConfigs.release
-    //命名规则前缀
-    prefix = 'your apk name_' + android.defaultConfig.versionName+'_';
-    //命名规则后缀
-    subfix = '';
+    signingConfig = android.signingConfigs.release
+    version = android.defaultConfig.versionName
+    // 调试日志
+    debugLog true
+    //命名规则
+    // abi为数字 7 = arm ；8 = arm64-v8a
+    // xxx随便 {abi}{version}{channel}随便组合
+    regulation = 'xxx{abi}{version}{channel}xxx.apk';
+
     channelConfig {
         aBase {
             // 基于aBase底包的渠道列表,渠道列表自行整理
-            childFlavors = readChannelFromFile('./channel1.txt')
+            arm_channel = readChannelFromFile('./channel1.txt')
+            arm_v8a_channel = ['000','100']
         }
 
         bBase {
