@@ -1,199 +1,251 @@
 package com.tgithubc
 
-import com.android.build.gradle.AppPlugin
+import com.android.build.FilterData
+import com.android.build.gradle.internal.scope.ApkData
 import com.android.builder.model.SigningConfig
 import org.apache.commons.io.FilenameUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.ProjectConfigurationException
-import org.gradle.api.plugins.ExtensionAware
 import org.gradle.internal.reflect.Instantiator
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
 
-
 class MultiChannelPlugin implements Plugin<Project> {
 
-    def CHANNEL_DIR = "/assets"
-    def CHANNEL_FILE = "/assets/channel_info"
-    def JARSIGNER_EXE = ".." + File.separator + "bin" + File.separator + "jarsigner"
-    def ZIPALIGN_EXE = "zipalign"
-    def jarsignerExe
-    def zipalignExe
+    enum ABI {
+        ABI_ARM_V8A("arm64-v8a", 8),
+        ABI_ARM("armeabi", 7),
+
+        private def code
+        private def description
+
+        ABI(def description, def code) {
+            this.description = description
+            this.code = code
+        }
+    }
+
+    // 不同abi产品生产线
+    static class ProductLine {
+
+        // 需要生成的cpu平台信息
+        ABI abi
+        // 需要生成的渠道信息列表
+        List<String> channelList
+        // 原始底包name
+        def apkName
+        // 原始底包path
+        def path
+        // 当前channel
+        def channel
+
+        @Override
+        String toString() {
+            """\
+        ProductLine {
+            abi= ${abi},
+            apkName=${apkName},
+            channelList=${channelList},
+            path= ${path},
+        }
+        """.stripMargin()
+        }
+
+        // 原始全路径path
+        def getOriginalPath() {
+            return path + apkName + ".apk"
+        }
+
+        // 临时处理
+        def getTempFileName() {
+            return path + apkName + "_" + channel + "_temp"
+        }
+    }
+
+    // 写入渠道信息根目录
+    static final def CHANNEL_DIR = "/assets"
+    // 写入渠道信息文件
+    static final def CHANNEL_FILE = "/assets/channel_info"
+    // 默认系统配置文件中签名jarsigner
+    def DEFAULT_JARSIGNER_EXE = System.properties.'java.home' + File.separator + ".."\
+                                        + File.separator + "bin"\
+                                        + File.separator + "jarsigner"
+    // java签名，4字节对齐
+    def jarsigner_path, zipalign_path
 
     @Override
     void apply(Project project) {
-        project.extensions.create("multichannel", MultiChannelPluginExtension)
-        project.multichannel.extensions.channelConfig = project.container(ChannelExtension) { String name ->
-            ChannelExtension channelExtension = project.gradle.services.get(Instantiator).newInstance(ChannelExtension, name)
-            assert channelExtension instanceof ExtensionAware
-            return channelExtension
+        // 扩展multichannel闭包
+        project.extensions.create("multichannel", MultiChannelExt)
+        // 嵌套扩展channelConfig闭包
+        project.multichannel.extensions.channelConfig \
+                    = project.container(Flavors) { String name ->
+            // DSL new
+            Flavors flavors = project.gradle.services.get(Instantiator).newInstance(Flavors, name)
+            return flavors
         }
 
         project.afterEvaluate {
-            def hasApp = project.plugins.withType(AppPlugin)
-            if (!hasApp) {
-                return
+
+            // 指定/默认 path 赋值
+            if (project.multichannel.jarsignerPath) {
+                jarsigner_path = project.multichannel.jarsignerPath
+            } else {
+                jarsigner_path = DEFAULT_JARSIGNER_EXE
             }
 
-            final def log = project.logger
-            final def variants = project.android.applicationVariants
-
-            if (project.multichannel.jarsignerPath) {
-                jarsignerExe = project.multichannel.jarsignerPath
-            } else {
-                jarsignerExe = System.properties.'java.home' + File.separator + JARSIGNER_EXE
+            if (project.multichannel.debugLog) {
+                println(">>> jarsigner path: " + jarsigner_path)
             }
 
             if (project.multichannel.zipalignPath) {
-                zipalignExe = project.multichannel.zipalignPath
+                zipalign_path = project.multichannel.zipalignPath
             } else {
-                zipalignExe = "${project.android.getSdkDirectory().getAbsolutePath()}" + File.separator + "build-tools" + File.separator + project.android.buildToolsVersion + File.separator + ZIPALIGN_EXE
+                zipalign_path = "${project.android.getSdkDirectory().getAbsolutePath()}"\
+                                        + File.separator + "build-tools"\
+                                        + File.separator + project.android.buildToolsVersion\
+                                        + File.separator + "zipalign"
             }
 
-            log.debug("jarsignerExe: " + jarsignerExe)
-            log.debug("zipalignExe: " + zipalignExe)
+            if (project.multichannel.debugLog) {
+                println(">>> zipalign path: " + zipalign_path)
+            }
 
+            final def variants = project.android.applicationVariants
             variants.all { variant ->
+
                 def flavorName = variant.properties.get('flavorName')
-
                 variant.assemble.doLast {
-                    def defaultSignConfig = project.multichannel.defaultSigningConfig
-
                     project.multichannel.channelConfig.each() { config ->
-                        if (flavorName.equals(config.name)) {
-                            log.debug("Generate channel based on $config.name")
-
-                            def signConfig = (config.signingConfig != null && config.signingConfig.isSigningReady()) ? config.signingConfig : defaultSignConfig
-
-                            if (signConfig == null || !signConfig.isSigningReady()) {
-                                throw new ProjectConfigurationException("Could not resolve signing config.", null)
+                        println(config)
+                        // 大flavor集合 匹配 release
+                        if (flavorName != config.name) {
+                            return
+                        }
+                        // 原始apk
+                        variant.getOutputs().each() { file ->
+                            ApkData apkData = file.getApkData()
+                            FilterData filterData = apkData.getFilters().first()
+                            Path path = Paths.get(file.getOutputFile().getAbsolutePath())
+                            def product = new ProductLine()
+                            product.apkName = FilenameUtils.removeExtension(path.getFileName().toString())
+                            if (filterData.getIdentifier() == ABI.ABI_ARM.description) {
+                                product.abi = ABI.ABI_ARM
+                                product.channelList = config.arm_channel
+                            } else if (filterData.getIdentifier() == ABI.ABI_ARM_V8A.description) {
+                                product.abi = ABI.ABI_ARM_V8A
+                                product.channelList = config.arm_v8a_channel
                             }
-
-                            config.childFlavors.each() { childFlavor ->
-                                log.debug("\tNew channel: $childFlavor")
-                                Path path = Paths.get(variant.getOutputs().first().getOutputFile().getAbsolutePath())
-
-                                genApkWithChannel(project,
-                                        path.getParent().toString() + File.separator,
-                                        FilenameUtils.removeExtension(path.getFileName().toString()),
-                                        childFlavor,
-                                        signConfig
-                                )
-
-                            }
-                            // delete pkg
-                            variant.getOutputs().first().getOutputFile().delete()
+                            product.path = path.getParent().toString() + File.separator
+                            produce(project, product)
                         }
                     }
                 }
             }
+        }
+    }
 
-            project.task('displayChannelConfig').doLast {
-                project.multichannel.channelConfig.each() { config ->
-                    def defaultSignConfig = project.multichannel.defaultSigningConfig
-                    def signConfig = (config.signingConfig != null && config.signingConfig.isSigningReady()) ? config.signingConfig : defaultSignConfig
-
-                    println "\\-----$config.name"
-                    println "\t\\-----signConfig: ${signConfig.getName()}"
-                    config.childFlavors.each() { childFlavor ->
-                        println "\t\\-----$childFlavor"
-                    }
-                }
+    def produce(Project project, ProductLine productLine) {
+        productLine.channelList.each() { channel ->
+            try {
+                productLine.channel = channel
+                createApkWithChannel(project, productLine)
+            } catch(Exception e) {
+                e.printStackTrace()
             }
         }
     }
 
-
-    void genApkWithChannel(Project project, String apkPath, String apkName, String channel, SigningConfig signConfig) throws IOException, InterruptedException {
-        def log = project.logger
-
-        log.debug("genApkWithChannel: " +
-                "\n\t" + apkPath +
-                "\n\t" + apkName +
-                "\n\t" + channel +
-                "\n\t" + project.multichannel.prefix +
-                "\n\t" + project.multichannel.subfix +
-                "\n\t" + signConfig.getStoreFile().getAbsolutePath() +
-                "\n\t" + signConfig.getKeyAlias() +
-                "\n\t" + signConfig.getStorePassword() +
-                "\n\t" + signConfig.getKeyPassword())
-
-        // create temp file: xx.apk --> xx.zip
-        File oldFile = new File(apkPath + apkName + ".apk")
-        File tempFile = new File(apkPath + apkName + "_" + channel + "_temp.zip")
-
-        File tempApkFile = new File(apkPath + apkName + "_" + channel + "_temp.apk")
-
-        // outFile is the final output apk file
-        File outFile = new File(apkPath + project.multichannel.prefix + channel + project.multichannel.subfix + ".apk")
-
-        if (outFile.exists()) {
-            outFile.delete()
+    void createApkWithChannel(Project project, ProductLine productLine) throws IOException, InterruptedException {
+        SigningConfig signConfig = project.multichannel.signingConfig
+        if (!signConfig || !signConfig.isSigningReady()) {
+            throw new ProjectConfigurationException("signing config == null", null)
         }
 
-        // copy oldFile to tempFile
-        Files.copy(oldFile.toPath(), tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        if (project.multichannel.debugLog) {
+            println(">>> createApkWithChannel "
+                        + "\n product:\n" + productLine
+                        + "\n debug:" + project.multichannel.debugLog
+                        + "\n regulation:" + project.multichannel.regulation
+                        + "\n keystore path:" + signConfig.getStoreFile().getAbsolutePath()
+                        + "\n keystore alias:" + signConfig.getKeyAlias()
+                        + "\n keystore password:" + signConfig.getStorePassword()
+                        + "\n keystore key password:" + signConfig.getKeyPassword()
+            )
+        }
 
-        FileSystem zipFileSystem = createZipFileSystem(tempFile.getAbsolutePath(), false)
-
+        // 把原始apk转zip临时文件
+        File originalFile = new File(productLine.getOriginalPath())
+        File tempZipFile = new File(productLine.getTempFileName() + ".zip")
+        Files.copy(originalFile.toPath(), tempZipFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
         // delete META-INF
-        deleteEntry(zipFileSystem, "/META-INF/")
+        FileSystem zipFileSystem = null
+        try {
+            zipFileSystem = createZipFileSystem(tempZipFile.getAbsolutePath())
+            deleteEntry(zipFileSystem, "/META-INF/")
+            createEntry(zipFileSystem, CHANNEL_FILE, productLine.channel)
+        } finally {
+            zipFileSystem?.close()
+        }
+        File tempApkFile = new File(productLine.getTempFileName() + ".apk")
+        Files.move(tempZipFile.toPath(), tempApkFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
 
-        createEntry(zipFileSystem, CHANNEL_FILE, channel)
-
-        zipFileSystem.close()
-
-        // rename file: xx.zip --> xx_temp.apk and waiting for re-sign
-        Files.move(tempFile.toPath(), tempApkFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-
-        // re-sign apk
-        String signCmd = (jarsignerExe + " -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore "
+        // 重签名
+        String signCmd = (jarsigner_path + " -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore "
                 + signConfig.getStoreFile().getAbsolutePath()
-                + " -storepass " + signConfig.getStorePassword() + " -keypass " + signConfig.getKeyPassword() + " "
-                + tempApkFile.getAbsolutePath().replaceAll(" ", "\" \"")
-                + " " + signConfig.getKeyAlias())
-
-        if (execCmdAndWait(signCmd, true) == 0) {
-            log.debug("jarsigner process: " + tempApkFile.getAbsolutePath())
-        } else {
-            log.error("jarsigner Error: " + tempApkFile.getAbsolutePath())
+                + " -storepass " + signConfig.getStorePassword()
+                + " -keypass " + signConfig.getKeyPassword() + " "
+                + tempApkFile.getAbsolutePath().replaceAll(" ", "\" \"") + " "
+                + signConfig.getKeyAlias())
+        if (execCmdAndWait(signCmd, project.multichannel.debugLog) != 0) {
+            if (project.multichannel.debugLog) {
+                println("jarsigner Error: " + tempApkFile.getAbsolutePath())
+            }
             return
         }
 
-        // zipalign
-        String zipAlignCmd = (zipalignExe + " -v 4 "
-                + tempApkFile.getAbsolutePath().replaceAll(" ", "\" \"")
-                + " " + outFile.getAbsolutePath().replaceAll(" ", "\" \""))
+        def finalApkName = project.multichannel.regulation \
+                                  .replaceAll("\\{abi}", String.valueOf(productLine.abi.code)) \
+                                  .replaceAll("\\{version}", project.multichannel.version) \
+                                  .replaceAll("\\{channel}", productLine.channel)
+        def finalApkPath = productLine.path + finalApkName
+        File finalApkFile = new File(finalApkPath)
+        if (finalApkFile.exists()) {
+            finalApkFile.delete()
+        }
 
-        if (execCmdAndWait(zipAlignCmd, true) == 0) {
-            log.debug("zipalign process: " + tempApkFile.getAbsolutePath())
-        } else {
-            log.error("zipalign Error: " + tempApkFile.getAbsolutePath())
+        // 对齐
+        String zipAlignCmd = (zipalign_path + " -v 4 "
+                + tempApkFile.getAbsolutePath().replaceAll(" ", "\" \"") + " "
+                + finalApkFile.getAbsolutePath().replaceAll(" ", "\" \""))
+        if (execCmdAndWait(zipAlignCmd, project.multichannel.debugLog) != 0) {
+            if (project.multichannel.debugLog) {
+                println("zipalign Error: " + tempApkFile.getAbsolutePath())
+            }
             return
         }
-        // delete temp apk file
         tempApkFile.delete()
     }
 
-    void createEntry(FileSystem zipFileSystem, String entryName, String content) throws IOException {
-        Path nf = zipFileSystem.getPath(entryName)
-
-        Path dirPath = zipFileSystem.getPath(CHANNEL_DIR)
-
+    static void createEntry(FileSystem fileSystem, String entryName, String content) throws IOException {
+        Path dirPath = fileSystem.getPath(CHANNEL_DIR)
         if (!Files.exists(dirPath)) {
             Files.createDirectory(dirPath)
         }
-        Writer writer = Files.newBufferedWriter(nf, StandardCharsets.UTF_8, StandardOpenOption.CREATE)
-        writer.write(content + "-" + System.currentTimeMillis())
-        writer.flush()
-        writer.close()
+        Path entryPath = fileSystem.getPath(entryName)
+        BufferedWriter bw = Files.newBufferedWriter(entryPath,
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE)
+        bw.with { writer ->
+            writer.write(content + "-" + System.currentTimeMillis())
+        }
     }
 
-    static void deleteEntry(FileSystem zipFileSystem, String entryName) throws IOException {
-        Path path = zipFileSystem.getPath(entryName)
+    static void deleteEntry(FileSystem fileSystem, String entryName) throws IOException {
+        Path path = fileSystem.getPath(entryName)
         if (!Files.exists(path)) {
             return
         }
@@ -201,15 +253,12 @@ class MultiChannelPlugin implements Plugin<Project> {
 
             @Override
             FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-
-                println("Deleting file: " + file)
                 Files.delete(file)
                 return FileVisitResult.CONTINUE
             }
 
             @Override
             FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                println("Deleting dir: " + dir)
                 if (exc == null) {
                     Files.delete(dir)
                     return FileVisitResult.CONTINUE
@@ -220,28 +269,25 @@ class MultiChannelPlugin implements Plugin<Project> {
         })
     }
 
-    static FileSystem createZipFileSystem(String zipFilename, boolean create) throws IOException {
-        // convert the filename to a URI
+    static FileSystem createZipFileSystem(String zipFilename) throws IOException {
         final Path path = Paths.get(zipFilename)
         final URI uri = URI.create("jar:file:" + path.toUri().getPath())
-
-        final Map<String, String> env = new HashMap<String, String>()
-        if (create) {
-            env.put("create", "true")
-        }
-        return FileSystems.newFileSystem(uri, env)
+        def map = ["create": "true"]
+        return FileSystems.newFileSystem(uri, map)
     }
 
-    static int execCmdAndWait(String cmd, boolean showOutput) throws IOException, InterruptedException {
+    static int execCmdAndWait(String cmd, boolean showLog) throws IOException, InterruptedException {
         Process process = Runtime.getRuntime().exec(cmd)
-        if (showOutput) {
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))
-            String line
-            while ((line = reader.readLine()) != null) {
-                println("jarsigner output: " + line)
+        if (process) {
+            if (showLog) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))
+                String line
+                while ((line = reader.readLine())) {
+                    println(">>> jarsigner : " + line)
+                }
             }
+            return process.waitFor()
         }
-        return process.waitFor()
+        return 0
     }
 }
